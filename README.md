@@ -24,5 +24,38 @@ Bio-chat is a robust RT-qPCR primer and probe design tool tailored for molecular
 
 In the Bio-chat community, we believe experimental success starts with a "perfect strike" in primer design. Bio-chat distills years of wet-lab and dry-lab iteration into a reliable, automated tool for the OpenClaw ecosystem.
 
+## 🤝 Sharing This Repository
+
+Want to share Bio-chat with your colleagues or the community? Here are a few easy ways:
+
+### ⭐ Star & Fork on GitHub
+1. Visit the repository page: **[https://github.com/zjuphD/Bio-chat](https://github.com/zjuphD/Bio-chat)**
+2. Click the **⭐ Star** button to bookmark it and help others discover it.
+3. Click the **Fork** button (top-right) to create your own copy under your GitHub account — perfect for customization or experimentation.
+
+### 🔗 Share the Link Directly
+Simply send the repository URL to anyone:
+```
+https://github.com/zjuphD/Bio-chat
+```
+
+### 💻 Clone & Use Locally
+Others can clone the repository and start using it right away:
+```bash
+git clone https://github.com/zjuphD/Bio-chat.git
+cd Bio-chat
+pip install -r requirements.txt
+```
+
+### 📄 Cite in Publications
+If you use Bio-chat in your research, please reference this repository so others can find it:
+```
+Bio-chat: Professional RT-qPCR Assay Designer
+Available at: https://github.com/zjuphD/Bio-chat
+```
+
+### 🐛 Contribute
+Found a bug or have a feature idea? Open an [Issue](https://github.com/zjuphD/Bio-chat/issues) or submit a [Pull Request](https://github.com/zjuphD/Bio-chat/pulls) — contributions are welcome!
+
 ---
 *Powered by OpenClaw | Designed by ZJU PhD @ Bio-chat Community*
