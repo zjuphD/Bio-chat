@@ -4,6 +4,7 @@ import json
 import time
 import math
 import re
+import sys
 
 def get_transcript(accession):
     if not accession: return None
@@ -189,23 +190,186 @@ def design_assay(target_seq, offtarget_seq=None, junctions=None, amplicon_range=
                                                 if len(candidates) >= 3: return candidates
     return candidates
 
+def blast_check_primers(f_seq, r_seq, organism="Homo sapiens", amplicon_min=50, amplicon_max=500):
+    """
+    Submit a primer pair to NCBI Primer-BLAST and return a structured
+    specificity report. Uses SEARCHMODE=0 (check given primers, no new design).
+    """
+    PRIMERTOOL_URL = "https://www.ncbi.nlm.nih.gov/tools/primer-blast/primertool.cgi"
+
+    submit_data = {
+        "PRIMER_LEFT_INPUT": f_seq,
+        "PRIMER_RIGHT_INPUT": r_seq,
+        "ORGANISM": organism,
+        "PRIMER_PRODUCT_MIN": str(max(50, amplicon_min - 20)),
+        "PRIMER_PRODUCT_MAX": str(amplicon_max + 50),
+        "PRIMER_SPECIFICITY_DATABASE": "refseq_rna",
+        "TOTAL_PRIMER_SPECIFICITY_MISMATCH": "1",
+        "PRIMER_3END_SPECIFICITY_MISMATCH": "1",
+        "SEARCHMODE": "0",
+        "PRIMER_NUM_RETURN": "20",
+        "LINK_LOC": "blast_primer",
+        "NEWWIN": "on",
+        "NEWWIN2": "on",
+    }
+
+    try:
+        resp = requests.post(PRIMERTOOL_URL, data=submit_data, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        return {"error": f"Primer-BLAST submission failed: {e}"}
+
+    # Extract job_key (appears as a hidden input value in the returned HTML)
+    m = re.search(r'name=["\']job_key["\'][^>]*value=["\']([^"\']+)["\']', resp.text)
+    if not m:
+        m = re.search(r'value=["\']([^"\']+)["\'][^>]*name=["\']job_key["\']', resp.text)
+    if not m:
+        m = re.search(r'job_key=([A-Za-z0-9_\-]{10,})', resp.text)
+    if not m:
+        return {"error": "Could not extract BLAST job key. NCBI may be temporarily unavailable."}
+
+    job_key = m.group(1)
+    print(f"  [BLAST] Job submitted (key: {job_key[:8]}...), waiting for results...")
+
+    # Poll until results are ready (up to 5 minutes, 10 s intervals)
+    ready_markers = [
+        "specific to your PCR template",
+        "off-target amplification",
+        "No hits found",
+        'class="prm-hit',
+        "Primer pair specificity",
+    ]
+    for attempt in range(30):
+        time.sleep(10)
+        try:
+            poll_resp = requests.get(
+                PRIMERTOOL_URL,
+                params={"job_key": job_key, "LINK_LOC": "blast_primer"},
+                timeout=30,
+            )
+            poll_resp.raise_for_status()
+        except Exception:
+            continue
+
+        html = poll_resp.text
+        if any(marker in html for marker in ready_markers):
+            return _parse_primer_blast_html(html, f_seq, r_seq)
+
+        if (attempt + 1) % 3 == 0:
+            print(f"  [BLAST] Still waiting ({(attempt + 1) * 10}s elapsed)...")
+
+    return {"error": "Primer-BLAST job timed out after 5 minutes."}
+
+
+def _parse_primer_blast_html(html, f_seq, r_seq):
+    """
+    Parse NCBI Primer-BLAST result HTML and return a structured report with:
+      - specific (bool | None): whether Primer-BLAST declared the pair specific
+      - products (list): each hit's accession, description, and amplicon size
+      - summary (str): human-readable one-line verdict
+    """
+    result = {
+        "forward_primer": f_seq,
+        "reverse_primer": r_seq,
+        "specific": None,
+        "products": [],
+        "summary": "",
+    }
+
+    # Determine specificity verdict from Primer-BLAST verdict sentence
+    if re.search(r"specific to your PCR template", html, re.IGNORECASE):
+        result["specific"] = True
+    elif re.search(r"off.target amplif|[Nn]on.specific|Potential off", html):
+        result["specific"] = False
+
+    if "No hits found" in html:
+        result["summary"] = "No hits found in the selected database."
+        return result
+
+    # Strip JS/CSS to simplify parsing
+    html_clean = re.sub(r"<script[^>]*>.*?</script[^>]*>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    html_clean = re.sub(r"<style[^>]*>.*?</style[^>]*>", "", html_clean, flags=re.DOTALL | re.IGNORECASE)
+
+    # Parse table rows; each product row contains an NCBI accession and a size
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_clean, re.DOTALL | re.IGNORECASE)
+    seen = set()
+    for row in rows:
+        text = re.sub(r"<[^>]+>", " ", row)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        acc_match = re.search(r"\b((?:NM|XM|XR|NR|NC|NG|NT|NW|NP)_\d+(?:\.\d+)?)\b", text)
+        if not acc_match:
+            continue
+        acc = acc_match.group(1)
+
+        # All numeric tokens in the row; filter to plausible amplicon sizes
+        sizes = [n for n in (int(s) for s in re.findall(r"\b(\d{2,4})\b", text)) if 50 <= n <= 5000]
+        if not sizes:
+            continue
+        size = sizes[0]
+
+        key = (acc, size)
+        if key not in seen:
+            seen.add(key)
+            # Best-effort description: text after the accession, up to 80 chars
+            desc_match = re.search(acc + r"[.\d\s]*((?:[A-Za-z][^\d]{4,80}?))\s+\d", text)
+            description = desc_match.group(1).strip() if desc_match else ""
+            result["products"].append({
+                "accession": acc,
+                "description": description[:80],
+                "product_size_bp": size,
+            })
+
+    n = len(result["products"])
+    if result["specific"] is True:
+        result["summary"] = f"✅ Specific — {n} on-target product(s), no off-target amplification detected."
+    elif result["specific"] is False:
+        result["summary"] = f"⚠️ Non-specific — {n} product(s) including potential off-target amplification."
+    else:
+        result["summary"] = f"ℹ️ {n} product(s) found. Please review manually for specificity."
+
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     parser.add_argument("--homolog")
     parser.add_argument("--offtarget")
+    parser.add_argument("--blast", action="store_true",
+                        help="Run NCBI Primer-BLAST specificity check on each top design")
+    parser.add_argument("--organism", default="Homo sapiens",
+                        help="Organism for BLAST search (name or NCBI taxid, default: 'Homo sapiens')")
     args = parser.parse_args()
-    
+
     target_seq = get_transcript(args.target)
     offtarget_seq = get_transcript(args.offtarget)
-    
+
     if target_seq:
         junctions = []
         if args.homolog:
             junctions = map_homolog_junctions(target_seq, args.homolog)
         else:
             junctions = get_exon_junctions(args.target)
-        
+
         print(f"Searching with {len(junctions)} junctions...")
         results = design_assay(target_seq, offtarget_seq, junctions)
+
+        if args.blast and results:
+            print(f"Running Primer-BLAST specificity check (organism: {args.organism})...")
+            for i, design in enumerate(results):
+                f_seq = design["F_Primer"]["seq"]
+                r_seq = design["R_Primer"]["seq"]
+                amp_size_str = design.get("Amplicon", "150bp").replace("bp", "").strip()
+                amp_size = int(amp_size_str) if amp_size_str.isdigit() else 150
+                print(f"\n[Design {i + 1}] Checking F={f_seq} / R={r_seq}")
+                blast_result = blast_check_primers(
+                    f_seq, r_seq,
+                    organism=args.organism,
+                    amplicon_min=amp_size - 20,
+                    amplicon_max=amp_size + 20,
+                )
+                design["BLAST_Specificity"] = blast_result
+                print(f"  Result: {blast_result.get('summary') or blast_result.get('error', 'N/A')}")
+
         print(json.dumps(results, indent=2))
