@@ -24,5 +24,9 @@ Bio-chat is a robust RT-qPCR primer and probe design tool tailored for molecular
 
 In the Bio-chat community, we believe experimental success starts with a "perfect strike" in primer design. Bio-chat distills years of wet-lab and dry-lab iteration into a reliable, automated tool for the OpenClaw ecosystem.
 
+## 🔗 More from the author
+
+**[BioSeeki](https://bioseeki.com/en)** — an AI research workspace for scientists: literature research with page-level citations, data analysis, paper writing and molecular cloning in one project.
+
 ---
 *Powered by OpenClaw | Designed by ZJU PhD @ Bio-chat Community*
